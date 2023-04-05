@@ -68,9 +68,9 @@ class MultiHeadAttentionLayer(AttentionLayer):
         #project query, key and value
         #after projection, split the embedding across num_heads
         #eg - expected shape for value is (N, H, T, D/H)
-        query = self.head_proj(query).view(N, S, H, D//H)
-        key = self.head_proj(key).view(N, T, H, D//H) 
-        value = self.head_proj(value).view(N, T, H, D//H).transpose(1,2)
+        query = self.query_proj(query).view(N, S, H, D//H)
+        key = self.key_proj(key).view(N, T, H, D//H) 
+        value = self.value_proj(value).view(N, T, H, D//H).transpose(1,2)
 
         #compute dot-product attention separately for each head. Don't forget the scaling value!
         #Expected shape of dot_product is (N, H, S, T)
@@ -81,13 +81,15 @@ class MultiHeadAttentionLayer(AttentionLayer):
             # Hint : If mask[i,j] = 0, we want softmax(QKT[i,j] + additive_mask[i,j]) to be 0
             # Think about what inputs make softmax 0.
             additive_mask =  -1e9 * (1 - attn_mask)
-            dot_product += additive_mask
+            # print("DEBUG_MultiHeadAttentionLayerFwd", dot_product.shape, additive_mask.shape)
+            dot_product += additive_mask.to(query.device)
         
         # apply softmax, dropout, and use value
         y = F.softmax(dot_product, dim=-1)
         y = self.dropout(y)
         y = torch.matmul(y,value)
         output = y.transpose(1,2).reshape(N, S, D)
+        output = self.head_proj(output)
         # shape of y is (N, H, S, D/H)
 
         # concat embeddings from different heads, and project
@@ -98,14 +100,16 @@ class PositionalEncoding(nn.Module):
     def __init__(self, embed_dim, dropout=0.1, max_len=5000):
         super().__init__()
         # TODO - use torch.nn.Embedding to create the encoding. Initialize dropout layer.
+        # print("DEBUG_PositionalEncodingInit", max_len, embed_dim)
         self.encoding = nn.Embedding(max_len, embed_dim)
         self.dropout = nn.Dropout(dropout)
       
     def forward(self, x):
         N, S, D = x.shape
         # TODO - add the encoding to x
-
-        output = x + self.encoding(x)
+        embedding = torch.arange(S, device=x.device).unsqueeze(0).repeat(N, 1)
+        # print("DEBUG_PositionalEncodingFwd", x.shape, x.dtype, embedding.shape)
+        output = x + self.encoding(embedding)
         output = self.dropout(output)
    
         return output
@@ -116,7 +120,7 @@ class SelfAttentionBlock(nn.Module):
     def __init__(self, input_dim, num_heads, dropout=0.1):
         super().__init__()
         # TODO: Initialize the following. Use MultiHeadAttentionLayer for self_attn.
-        self.self_attn = MultiHeadAttentionLayer(input_dim, num_heads, dropout)
+        self.self_attn = MultiHeadAttentionLayer(input_dim, num_heads)
         self.dropout = nn.Dropout(dropout)
         self.layernorm = nn.LayerNorm(input_dim)
 
@@ -177,7 +181,8 @@ class DecoderLayer(nn.Module):
     def forward(self, seq, cond, mask):
         out = self.self_atn_block(seq, mask)
         out = self.cross_atn_block(out, cond)
-        return self.feedforward_block(out)
+        out = self.feedforward_block(out)
+        return out
        
 class TransformerDecoder(nn.Module):
     def __init__(self, word_to_idx, idx_to_word, input_dim, embed_dim, num_heads=4,
@@ -215,12 +220,12 @@ class TransformerDecoder(nn.Module):
         # TODO - get caption and feature embeddings 
         # Don't forget position embeddings for captions!
         # expected caption embedding output shape : (N, T, D)
-        feature_embedding = self.feature_embedding(features)
+        feature_embedding = self.feature_embedding(features).unsqueeze(1)
         caption_embedding = self.caption_embedding(captions)
         caption_embedding = self.positional_encoding(caption_embedding)
         # Unsqueeze feature embedding along dimension 1
         # expected feature embedding output shape : (N, 1, D) 
-        feature_embedding = feature_embedding.unsqueeze(1)
+        # print("DEBUG_get_data_embeddings: ", feature_embedding.shape, caption_embedding.shape)
         return feature_embedding, caption_embedding
 
     def get_causal_mask(self, _len):
@@ -228,7 +233,7 @@ class TransformerDecoder(nn.Module):
         # This mask is multiplicative
         # setting mask[i,j] = 0 means jth element of the sequence is not used 
         # to predict the ith element of the sequence.
-        mask = torch.tril(torch.ones(_len, _len), diagonal=1) # TODO KRITI check mask
+        mask = torch.tril(torch.ones(_len, _len)) # TODO why diagonal 1 is not working 
         return mask
                                       
     def forward(self, features, captions):

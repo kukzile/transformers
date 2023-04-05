@@ -49,12 +49,12 @@ class Trainer:
 
         
         # TODO - Compute cross entropy loss between predictions and labels. 
-        loss = None
-        
-
+        criterion = torch.nn.CrossEntropyLoss()
+        loss = criterion(predictions, labels)
         return loss
 
     def train(self):
+        # self.model = torch.load("checkpoints/model_30.pth")
         for i in range(self.num_epochs):
             epoch_loss = 0
             num_batches = 0
